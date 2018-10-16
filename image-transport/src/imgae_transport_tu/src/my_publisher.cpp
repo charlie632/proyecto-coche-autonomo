@@ -16,7 +16,7 @@ int main(int argc, char** argv)
 
   // Convert the passed as command line parameter index for the video device to an integer
 //  std::istringstream video_sourceCmd(argv[1]);
-  int video_source = 1;
+  int video_source = 0;
   // Check if it is indeed a number
 //  if(!(video_sourceCmd >> video_source)) return 1;
 

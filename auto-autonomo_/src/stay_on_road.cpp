@@ -1,7 +1,5 @@
 #include "find_road.h"
 #include "move_car.h"
-#include <image_transport/image_transport.h>
-#include <cv_bridge/cv_bridge.h>
 #include <math.h>  
 
 int main(int argc, char** argv)
@@ -25,13 +23,6 @@ int main(int argc, char** argv)
   RoadFinder rf;
   AckermannMover am;
   ros::Rate rate(20);
-
-  image_transport::ImageTransport it_;
-	image_transport::Subscriber image_sub_;
-  image_transport::Publisher image_pub_;
-
-  image_sub_ = it_.subscribe("/camera/image", 1, &Edge_Detector::imageCb, this);
-	image_pub_ = it_.advertise("/auto-autonomo/raw_image", 1);
   
   while(ros::ok()) {
 
@@ -52,7 +43,7 @@ int main(int argc, char** argv)
     
     float steering_angle = (steer*3.1416/180);
 
-    ROS_INFO("RAD: %f | steer: %f", steering_angle, steer);
+    // ROS_INFO("RAD: %f | steer: %f", steering_angle, steer);
 
 
     // speed_command = std::max(min_speed, std::min(speed_command, max_speed));
