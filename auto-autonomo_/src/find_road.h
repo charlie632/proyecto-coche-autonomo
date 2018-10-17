@@ -9,6 +9,7 @@
 #include <opencv2/highgui/highgui.hpp>
 #include "opencv2/opencv.hpp"
 
+using namespace cv;
 static const std::string OPENCV_WINDOW = "Image window";
 static const std::string OPENCV_WINDOW_THR = "thr";
 static const std::string OPENCV_WINDOW_EDGES = "edges";
@@ -23,6 +24,9 @@ const double halfC = M_PI / 180;
 const float IMAGE_HEIGHT = 480;
 const float IMAGE_WIDTH = 640;
 
+Rect ROI(0, 0, IMAGE_WIDTH, ROI_Y); //(start from 50,50 and has size 100x100)
+Mat mask_ = Mat::zeros(640, 480, CV_8UC3);
+Point rook_points[1][20];
 
 /**
    Class that subscribes to the image stream from the camera on the ackermann vehicle,
@@ -50,9 +54,9 @@ public:
     // Temporary values
     middle_of_road_.x = 400;
     // Subscribe to input video feed and publish output video feed
-    image_sub_ = it_.subscribe("/camera/image", 1,
-                               &RoadFinder::imageCallback, this);
-    image_pub_ = it_.advertise("/road_finder/output_video", 1);
+    // image_sub_ = it_.subscribe("/camera/image", 1,
+    //                            &RoadFinder::imageCallback, this);
+    // image_pub_ = it_.advertise("/road_finder/output_video", 1);
 
     cv::namedWindow(OPENCV_WINDOW);
   }
@@ -111,11 +115,6 @@ public:
     }
   }
 
-  float getAngleError()
-  {
-    return angle_error_degrees;
-  }
-
   cv::Point2f &getMidpoint()
   {
     return middle_of_road_;
@@ -154,6 +153,247 @@ public:
   std::vector<cv::Vec4i> &getLines()
   {
     return lines_;
+  }
+
+  void imageProcessing(const cv::Mat &img)
+  {
+    cv::cvtColor(img, hsv, cv::COLOR_BGR2HSV);
+    // smooth the image in the "src" and save it to "dst"
+    // blur(src, dst, Size(i,i));
+
+    // Gaussian smoothing
+    Mat dst;
+
+    cv::GaussianBlur(hsv, dst, cv::Size(5, 5), 0, 0);                     //Convert to HSV;
+    cv::inRange(dst, cv::Scalar(0, 0, 0), cv::Scalar(180, 255, 66), thr); //Mask
+
+    cv::imshow(OPENCV_WINDOW_THR, thr);
+    cv::imshow("blur", dst);
+
+    Mat mask(thr.size(), CV_8UC1, Scalar::all(255));
+    mask(ROI).setTo(Scalar::all(0));
+
+    cv::Mat img_roi;
+    bitwise_and(thr, mask, img_roi);
+
+    rook_points[0][0] = Point(0, 480);
+    rook_points[0][1] = Point(120, 320);
+    rook_points[0][2] = Point(470, 320);
+    rook_points[0][3] = Point(640, 480);
+
+    const Point *ppt[1] = {rook_points[0]};
+    int npt[] = {4};
+
+    fillPoly(mask_, ppt, npt, 1, Scalar(255, 255, 255), 8);
+
+    // bitwise_and(mask_, thr, img_roi);
+    imshow("Image", mask_);
+    imshow("roi", img_roi);
+
+    cv::Mat thr_ = img_roi.clone();
+
+    //Skelenotization
+
+    // cv::Mat skel(thr.size(), CV_8UC1, cv::Scalar(0));
+    // cv::Mat temp(thr.size(), CV_8UC1);
+
+    // cv::Mat element = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3, 3));
+
+    // bool done;
+    // do
+    // {
+    //   cv::morphologyEx(thr, temp, cv::MORPH_OPEN, element);
+    //   cv::bitwise_not(temp, temp);
+    //   cv::bitwise_and(thr, temp, temp);
+    //   cv::bitwise_or(skel, temp, skel);
+    //   cv::erode(thr, thr, element);
+
+    //   double max;
+    //   cv::minMaxLoc(thr, 0, &max);
+    //   done = (max == 0);
+    // } while (!done);
+
+    //End Skelenotization
+
+    cv::Canny(thr_, edge, 50, 200, 3);
+    cv::HoughLinesP(edge, lines_, 1, CV_PI / 180, 10, 70, 40);
+    cv::Mat img_copy = img.clone();
+
+    float right_angles = 0;
+    float left_angles = 0;
+    float left_lines_count = 0;
+    float right_lines_count = 0;
+    float angle_diff = 0;
+
+    cv::Mat img_dummy = img.clone();
+    for (int i = 0; i < lines_.size(); i++)
+    {
+      cv::Vec4i l = lines_[i];
+
+      float x_ = l[2] - l[0];
+      float y_ = l[3] - l[1];
+
+      cv::line(img_dummy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
+               cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
+      float m = 0;
+
+      if (x_ != 0)
+      {
+        m = -y_ / x_;
+      }
+
+      float b = l[3] - (m * l[2]);
+
+      if (l[3] < ROI_Y || l[1] < ROI_Y)
+      {
+        continue;
+      }
+
+      if (x_ == 0)
+      {
+        continue;
+      }
+
+      float degrees = atan2(y_, x_) * (180 / PI);
+
+      if (fabs(degrees) < 10 || fabs(degrees) > 90)
+      {
+        continue;
+      }
+
+      if (degrees < 0)
+      {
+        //Lineas izq
+        degrees = degrees * -1;
+        degrees = -degrees + 180;
+        left_angles = left_angles + degrees;
+        left_lines_count++;
+        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
+                 cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
+      }
+      else if (degrees > 0)
+      {
+        //lineas derechas
+        right_angles = right_angles + degrees;
+        right_lines_count++;
+        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
+                 cv::Scalar(0, 0, 200), 2, cv::LINE_AA);
+      }
+    }
+
+    if (right_lines_count != 0)
+    {
+      right_angle_average = right_angles / right_lines_count;
+    }
+    else
+    {
+      right_angle_average = 0;
+    }
+
+    if (left_lines_count != 0)
+    {
+      left_angle_average = left_angles / left_lines_count;
+    }
+    else
+    {
+      left_angle_average = 0;
+    }
+
+    float angle_average = 0;
+
+    if (left_angle_average > 0 && right_angle_average > 0)
+    {
+      angle_average = (right_angle_average + left_angle_average) / 2;
+    }
+    else if (left_angle_average > 0)
+    {
+      angle_average = left_angle_average;
+    }
+    else
+    {
+      angle_average = right_angle_average;
+    }
+    ROS_INFO("left: %f, right: %f, av: %f", left_angle_average, right_angle_average, angle_average);
+
+    // ROS_INFO("AVE %f", angle_average);
+
+    cv::Point first_point = cv::Point(IMAGE_WIDTH / 2, IMAGE_HEIGHT);
+    float last_x = IMAGE_WIDTH / 2 - (IMAGE_HEIGHT / tanf(angle_average * halfC));
+    cv::Point last_point = cv::Point(last_x, 0);
+
+    cv::line(img_copy, first_point, last_point,
+             cv::Scalar(255, 0, 0), 2, cv::LINE_AA);
+
+    angle_error_degrees = angle_diff;
+
+    //Show windows
+    cv::imshow(OPENCV_WINDOW, img_copy);
+    cv::imshow("jjj", img_dummy);
+    cv::imshow(OPENCV_WINDOW_EDGES, edge);
+    // cv::imshow(OPENCV_WINDOW_SKE, skel);
+    cv::waitKey(3);
+  }
+
+  cv::Mat findLanes(cv::Mat img_copy)
+  {
+
+    float right_angles = 0;
+    float left_angles = 0;
+    float left_lines_count = 0;
+    float right_lines_count = 0;
+    float angle_diff = 0;
+
+    for (int i = 0; i < lines_.size(); i++)
+    {
+      cv::Vec4i l = lines_[i];
+
+      float x_ = l[2] - l[0];
+      float y_ = l[3] - l[1];
+      float m = 0;
+
+      if (x_ != 0)
+      {
+        m = -y_ / x_;
+      }
+
+      float b = l[3] - (m * l[2]);
+
+      if (l[3] < ROI_Y || l[1] < ROI_Y)
+      {
+        continue;
+      }
+
+      if (x_ == 0)
+      {
+        continue;
+      }
+
+      float degrees = atan2(y_, x_) * (180 / PI);
+
+      if (fabs(degrees) < 10 || fabs(degrees) > 90)
+      {
+        continue;
+      }
+
+      if (degrees < 0)
+      {
+        //Lineas izq
+        degrees = degrees * -1;
+        degrees = -degrees + 180;
+        left_angles = left_angles + degrees;
+        left_lines_count++;
+        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
+                 cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
+      }
+      else if (degrees > 0)
+      {
+        //lineas derechas
+        right_angles = right_angles + degrees;
+        right_lines_count++;
+        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
+                 cv::Scalar(0, 0, 200), 2, cv::LINE_AA);
+      }
+    }
   }
 
   /**
@@ -212,7 +452,7 @@ public:
 
     cv::imshow(OPENCV_WINDOW_SKE, skel);
 
-     cv::Canny(skel, edge, 50, 200, 3);                          // detect edges
+    cv::Canny(skel, edge, 50, 200, 3);                         // detect edges
     cv::HoughLinesP(edge, lines_, 1, CV_PI / 180, 10, 50, 10); // detect lines
 
     cv::imshow(OPENCV_WINDOW_THR, thr);
@@ -276,7 +516,6 @@ public:
 
       float degrees = atan2(y_, x_) * (180 / PI);
 
-
       if (fabs(degrees) < 10 || fabs(degrees) > 90)
       {
         continue;
@@ -285,12 +524,12 @@ public:
       if (degrees < 0)
       {
         //Lineas izq
-        degrees = degrees*-1;
+        degrees = degrees * -1;
         degrees = -degrees + 180;
         left_angles = left_angles + degrees;
         left_lines_count++;
         cv::line(cv_ptr->image, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-               cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
+                 cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
       }
       else if (degrees > 0)
       {
@@ -298,12 +537,10 @@ public:
         right_angles = right_angles + degrees;
         right_lines_count++;
         cv::line(cv_ptr->image, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-               cv::Scalar(0, 0, 200), 2, cv::LINE_AA);
+                 cv::Scalar(0, 0, 200), 2, cv::LINE_AA);
       }
 
       // ROS_INFO("Angulo der: %f Ángulo izq: %f", right_angle_average, left_angle_average);
-
-      
     }
 
     if (right_lines_count != 0)
@@ -325,18 +562,17 @@ public:
     }
 
     angle_diff = right_angle_average - (left_angle_average * (-1));
-     ROS_INFO("left: %f, right: %f", left_angle_average, right_angle_average);
-    float angle_average = (right_angle_average + left_angle_average)/2;
+    ROS_INFO("left: %f, right: %f", left_angle_average, right_angle_average);
+    float angle_average = (right_angle_average + left_angle_average) / 2;
 
     // ROS_INFO("AVE %f", angle_average);
 
-
-    cv::Point first_point = cv::Point(IMAGE_WIDTH/2, IMAGE_HEIGHT);
-    float last_x = IMAGE_WIDTH/2 - (IMAGE_HEIGHT/tanf(angle_average*halfC));
+    cv::Point first_point = cv::Point(IMAGE_WIDTH / 2, IMAGE_HEIGHT);
+    float last_x = IMAGE_WIDTH / 2 - (IMAGE_HEIGHT / tanf(angle_average * halfC));
     cv::Point last_point = cv::Point(last_x, 0);
 
     cv::line(cv_ptr->image, first_point, last_point,
-               cv::Scalar(255, 0, 0), 2, cv::LINE_AA);
+             cv::Scalar(255, 0, 0), 2, cv::LINE_AA);
 
     // ROS_INFO("ANGLE_DIFF: %f", angle_diff);linear extrapolation
     angle_error_degrees = angle_diff;
