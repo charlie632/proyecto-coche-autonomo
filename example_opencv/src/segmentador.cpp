@@ -54,7 +54,7 @@ int main(int argc, char* argv[])
     Mat image, image_hsv, image_bw;
     Mat frame, frame_HSV, frame_threshold;
 
-    VideoCapture cap(0);
+    VideoCapture cap(1);
     namedWindow(window_capture_name);
     namedWindow(window_detection_name);
     // Trackbars to set thresholds for HSV values

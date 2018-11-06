@@ -12,8 +12,11 @@ int main(int argc, char** argv){
    ros::NodeHandle n;
    ros::Rate loop_rate(10);
 
+   ros::Publisher cmd_pub = n.advertise<ackermann_msgs::AckermannDriveStamped>("/ackermann_vehicle/ackermann_cmd",1);
+
    ros::Publisher velocity_pub = n.advertise<std_msgs::Float64>("sub_speed", 1);
    ros::Publisher steering_pub = n.advertise<std_msgs::Float64>("sub_steering_angle", 1);
+   ackermann_msgs::AckermannDriveStamped driveStamped;
   
 
   std_msgs::Float64 velocity;
@@ -45,7 +48,7 @@ int main(int argc, char** argv){
          steering_angle = max(-11.0,min(steering_angle + 1.0 , 11.0)); 
       }
       if (key == 82){
-         speed = max(0.0,min(speed+0.1,1.5));
+         speed = max(0.0,min(speed+0.05,1.5));
       }
       if (key == 83){
          steering_angle = max(-11.0,min(steering_angle - 1.0 , 11.0)); 
@@ -59,14 +62,21 @@ int main(int argc, char** argv){
 
       velocity_pub.publish(velocity);
       steering_pub.publish(radius);
-      // cmd_pub.publish(driveStamped);
+
+      driveStamped.drive.speed = speed;
+      driveStamped.drive.steering_angle = steering_angle*CV_PI/180;
+		
+      cmd_pub.publish(driveStamped);
+
       cout<<"Steering_angle = "<<steering_angle<<", speed = "<<speed<<endl;
 
 
       if (key == 113){
         velocity.data = 0.0;
         radius.data = 0.0;
-        //  cmd_pub.publish(driveStamped);
+        driveStamped.drive.speed = 0;
+        driveStamped.drive.steering_angle = 0;
+        cmd_pub.publish(driveStamped);
 
          cout << " Bye, bye." << endl;
          break;

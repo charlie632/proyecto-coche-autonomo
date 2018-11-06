@@ -10,24 +10,46 @@
 #include "opencv2/opencv.hpp"
 
 using namespace cv;
-static const std::string OPENCV_WINDOW = "Image window";
-static const std::string OPENCV_WINDOW_THR = "thr";
-static const std::string OPENCV_WINDOW_EDGES = "edges";
-static const std::string OPENCV_WINDOW_SKE = "Skeleton";
+using namespace std;
 
-const float ROI_Y = 320.0;
-const float LINE_HEIGHT = 370.0;
-const float PI = 3.14159;
+int width = 640, heigth = 480;
+Mat image_bgr = Mat(heigth, width, CV_8UC3, Scalar(0,0,0));
+int cut = 370;
+int h_cut = 100;
 
-const double halfC = M_PI / 180;
+Mat image_crop = Mat(heigth - cut, width, CV_8UC3, Scalar(0,0,0));
+Mat image_bw   = Mat(heigth - cut, width, CV_8UC1, Scalar(0));
 
-const float IMAGE_HEIGHT = 480;
-const float IMAGE_WIDTH = 640;
+Mat element, labels, stats, centroids;
+int nLabels, the_max, index_max;
+int midWidth = width / 2.0;
+int cut_number = 220;
+Mat mask_leftL  = Mat(heigth - cut, width, CV_8UC1, Scalar(0));
+Mat mask_rightL = Mat(heigth - cut, width, CV_8UC1, Scalar(0));
+Mat mask_leftG  = Mat(heigth - cut, width, CV_8UC1, Scalar(0));
+Mat mask_rightG = Mat(heigth - cut, width, CV_8UC1, Scalar(0));
 
-Rect ROI(0, 0, IMAGE_WIDTH, ROI_Y); //(start from 50,50 and has size 100x100)
-Mat mask_ = Mat::zeros(640, 480, CV_8UC3);
-Point rook_points[1][20];
 
+Mat and_masks;
+double min_and_masks, max_and_masks;
+
+bool encimadas = false;
+
+
+double steering_angle=0.0, speed=0.0;
+bool tracking_left = false, tracking_right = false;
+float PuntoI, PuntoD, AnguloI, AnguloD;
+
+
+
+ros::Publisher cmd_pub;
+
+
+
+struct driveStruct {
+  float steering_angle;
+  float speed;
+};
 /**
    Class that subscribes to the image stream from the camera on the ackermann vehicle,
    and implements some basic computer vision methods to find the road ahead. 
@@ -35,563 +57,356 @@ Point rook_points[1][20];
  */
 class RoadFinder
 {
-  cv::Point2f middle_of_road_;
-  ros::NodeHandle nh_;
-  image_transport::ImageTransport it_;
-  image_transport::Subscriber image_sub_;
-  image_transport::Publisher image_pub_;
-  float right_angle_average;
-  float left_angle_average;
-  float angle_error_degrees;
-  cv::Mat thr, gray, hsv, edge;
-
-  std::vector<cv::Vec4i> lines_; // To hold lines found by Hough transform
 
 public:
   RoadFinder()
-      : it_(nh_)
   {
-    // Temporary values
-    middle_of_road_.x = 400;
-    // Subscribe to input video feed and publish output video feed
-    // image_sub_ = it_.subscribe("/camera/image", 1,
-    //                            &RoadFinder::imageCallback, this);
-    // image_pub_ = it_.advertise("/road_finder/output_video", 1);
 
-    cv::namedWindow(OPENCV_WINDOW);
   }
 
-  float get_right_angle()
+  driveStruct imageProcessing(const cv::Mat &image_bgr, float k1, float k2, int erosion_size = 10)
   {
-    return right_angle_average;
-  }
+      // line(image_bgr, Point(0,cut), Point(width, cut), Scalar(255,0,0), 3, LINE_AA);
 
-  float get_left_angle()
-  {
-    return left_angle_average;
-  }
+      // imshow("Camera", image_bgr);
+      // waitKey(1);
 
-  RoadFinder(const char *topic_name)
-      : it_(nh_)
-  {
-    // Temporary values
-    middle_of_road_.x = 2;
-    middle_of_road_.y = 2;
+      encimadas  = false;
 
-    // Subscribe to input video feed and publish output video feed
-    image_sub_ = it_.subscribe(topic_name, 1,
-                               &RoadFinder::imageCallback, this);
-    image_pub_ = it_.advertise("/road_finder/output_video", 1);
+      // Basic image pre-traitment
+      Rect myROI(h_cut, cut, width - 2*h_cut, heigth - cut); // myROI(x,y,w,h)
+      image_crop = image_bgr(myROI);
+      //cvtColor(image_crop, image_gray, COLOR_BGR2GRAY);
+      blur(image_crop, image_crop, Size(3,3));
 
-    cv::namedWindow(OPENCV_WINDOW);
-  }
+      // imshow("Camera", image_crop);
+      // waitKey(1);
 
-  ~RoadFinder()
-  {
-    cv::destroyWindow(OPENCV_WINDOW);
-  }
+      midWidth = image_crop.cols/2;
 
-  int imageWidth()
-  {
-    if (thr.empty())
-    {
-      return 800;
-    } // Temporary value
-    else
-    {
-      return thr.cols;
-    }
-  }
+      
 
-  int imageHeight()
-  {
-    if (thr.empty())
-    {
-      return 600;
-    } // Temporary value
-    else
-    {
-      return thr.rows;
-    }
-  }
+      inRange(image_crop, Scalar(0, 0, 0), Scalar(60, 255, 100), image_bw);
+      
+      imshow("Camera", image_bw);
+      // waitKey(1);
 
-  cv::Point2f &getMidpoint()
-  {
-    return middle_of_road_;
-  }
 
-  /**
-     Returns the number of continuous white pixels along the middle column of the thresholded image
-     starting from the bottom of the image. 
-  */
-  int freeRoadAhead()
-  {
-    if (thr.empty())
-    {
-      return 0;
-    }
-    else
-    {
-      // Get mid column of thresholded image
-      int horizon = imageHeight() / 2;
-      int midcol = imageWidth() / 2;
-      cv::Mat mid_line = thr.col(midcol);
 
-      int k = imageHeight() - 1;
 
-      while (mid_line.at<uchar>(k) == 255 and k > horizon)
-      {
-        k--;
+
+      int erosion_type = MORPH_ELLIPSE; //  Other options: MORPH_RECT; MORPH_CROSS;
+      element = getStructuringElement( erosion_type,
+                       Size( 2*erosion_size + 1, 2*erosion_size+1 ),
+                       Point( erosion_size, erosion_size ) );
+
+      
+
+
+
+      Mat mask_leftL(image_crop.rows, image_crop.cols, CV_8UC1, Scalar(0));
+      Mat mask_rightL(image_crop.rows, image_crop.cols, CV_8UC1, Scalar(0));
+      if (tracking_left == false){
+         mask_leftL(Range(image_crop.rows *.9, image_crop.rows), Range(0, cut_number)) = 255;
+         mask_leftG = mask_leftL.clone();
+         //cout << "Inicializo MASCARA izq" << endl;
       }
-      return imageHeight() - k;
-    }
-  }
-
-  /**
-     Returns the lines found in the image 
-   */
-  std::vector<cv::Vec4i> &getLines()
-  {
-    return lines_;
-  }
-
-  void imageProcessing(const cv::Mat &img)
-  {
-    cv::cvtColor(img, hsv, cv::COLOR_BGR2HSV);
-    // smooth the image in the "src" and save it to "dst"
-    // blur(src, dst, Size(i,i));
-
-    // Gaussian smoothing
-    Mat dst;
-
-    cv::GaussianBlur(hsv, dst, cv::Size(5, 5), 0, 0);                     //Convert to HSV;
-    cv::inRange(dst, cv::Scalar(0, 0, 0), cv::Scalar(180, 255, 66), thr); //Mask
-
-    cv::imshow(OPENCV_WINDOW_THR, thr);
-    cv::imshow("blur", dst);
-
-    Mat mask(thr.size(), CV_8UC1, Scalar::all(255));
-    mask(ROI).setTo(Scalar::all(0));
-
-    cv::Mat img_roi;
-    bitwise_and(thr, mask, img_roi);
-
-    rook_points[0][0] = Point(0, 480);
-    rook_points[0][1] = Point(120, 320);
-    rook_points[0][2] = Point(470, 320);
-    rook_points[0][3] = Point(640, 480);
-
-    const Point *ppt[1] = {rook_points[0]};
-    int npt[] = {4};
-
-    fillPoly(mask_, ppt, npt, 1, Scalar(255, 255, 255), 8);
-
-    // bitwise_and(mask_, thr, img_roi);
-    imshow("Image", mask_);
-    imshow("roi", img_roi);
-
-    cv::Mat thr_ = img_roi.clone();
-
-    //Skelenotization
-
-    // cv::Mat skel(thr.size(), CV_8UC1, cv::Scalar(0));
-    // cv::Mat temp(thr.size(), CV_8UC1);
-
-    // cv::Mat element = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3, 3));
-
-    // bool done;
-    // do
-    // {
-    //   cv::morphologyEx(thr, temp, cv::MORPH_OPEN, element);
-    //   cv::bitwise_not(temp, temp);
-    //   cv::bitwise_and(thr, temp, temp);
-    //   cv::bitwise_or(skel, temp, skel);
-    //   cv::erode(thr, thr, element);
-
-    //   double max;
-    //   cv::minMaxLoc(thr, 0, &max);
-    //   done = (max == 0);
-    // } while (!done);
-
-    //End Skelenotization
-
-    cv::Canny(thr_, edge, 50, 200, 3);
-    cv::HoughLinesP(edge, lines_, 1, CV_PI / 180, 10, 70, 40);
-    cv::Mat img_copy = img.clone();
-
-    float right_angles = 0;
-    float left_angles = 0;
-    float left_lines_count = 0;
-    float right_lines_count = 0;
-    float angle_diff = 0;
-
-    cv::Mat img_dummy = img.clone();
-    for (int i = 0; i < lines_.size(); i++)
-    {
-      cv::Vec4i l = lines_[i];
-
-      float x_ = l[2] - l[0];
-      float y_ = l[3] - l[1];
-
-      cv::line(img_dummy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-               cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
-      float m = 0;
-
-      if (x_ != 0)
-      {
-        m = -y_ / x_;
+      if (tracking_right == false){
+         mask_rightL(Range(image_crop.rows *.9 , image_crop.rows), Range(image_crop.cols - cut_number, image_crop.cols)) = 255;
+         mask_rightG = mask_rightL.clone();
+         //cout << "Inicializo MASCARA der" << endl;
       }
 
-      float b = l[3] - (m * l[2]);
+      Mat image_lineLeft, image_lineRight;
+      bitwise_and(image_bw, mask_leftG , image_lineLeft );
+      bitwise_and(image_bw, mask_rightG, image_lineRight);
 
-      if (l[3] < ROI_Y || l[1] < ROI_Y)
-      {
-        continue;
+      // imshow("Camera_lineright", image_lineRight);
+      imshow("camera_left", mask_leftG);
+      imshow("Camera_rightg", mask_rightG);
+      // waitKey(1);
+      
+      
+
+
+
+
+      // Busquemos el carril IZQUIERDO
+      nLabels = connectedComponentsWithStats(image_lineLeft, labels, stats, centroids, 8, CV_32S);
+      //cout << endl << "Number of connected components = " << nLabels << endl << "All stats = " << stats << endl;
+      // Find the biggest area
+      the_max=0, index_max=-1;
+      if (nLabels > 1){
+         for (int i=1; i<nLabels; i++){
+            if (stats.at<int>(i,CC_STAT_AREA) > the_max){
+               the_max = stats.at<int>(i,CC_STAT_AREA);
+               index_max = i;
+            }
+         }
+         //cout << " Bigest (area, index) = (" << the_max << ", " << index_max << ")" << endl;
+
+         Mat image_label;
+         compare(labels, index_max, image_label, CMP_EQ);
+         // Better way to get the skeleton of an binary image
+         Mat skel(image_crop.rows, image_crop.cols, CV_8UC1, Scalar(0));
+         int inicio, num_pixels = 0;
+         for (int row = 0; row < skel.rows; row++){
+            bool flag = false;
+            for (int col = 0; col < skel.cols; col++){
+               if (flag == false && image_label.at<unsigned char>(row,col,0) > 0){
+                  inicio = col;
+                  flag = true;
+               }
+               if (flag == true && image_label.at<unsigned char>(row,col,0) == 0){
+                  skel.at<unsigned char>(row, (inicio + col) / 2 ) = 255;
+                  flag = false;
+                  num_pixels++;
+               }
+            }
+         }
+      //    imshow("Camera", skel);
+      //       waitKey(1);
+         //cout << num_pixels << endl;
+         if (num_pixels > 5){
+            Mat FI(num_pixels, 2, CV_32F, Scalar(0));
+            Mat  X(num_pixels, 1, CV_32F, Scalar(0));
+            int index = 0;
+            for(float y = 0; y < skel.rows; y++){
+               for(float x = 0; x < skel.cols; x++){
+                  if (skel.at<unsigned char>(y,x) == 255){
+                     FI.at<float>(index,0) = y;
+                     FI.at<float>(index,1) = 1.0;
+                      X.at<float>(index,0) = x;
+                     index++;               
+                  }
+               }
+            }
+            Mat FIT = FI.t();
+            Mat Par = (FIT * FI).inv() * FIT *X;
+            //cout << " Param = " << Par.at<float>(0,1) << endl;
+            vector<Point2f> curvePoints;
+            float x;
+            Point2f new_point;
+            for (float y = 0; y < heigth; y++){
+               x = Par.at<float>(0,0) * y + 
+                   Par.at<float>(0,1);
+               new_point = Point2f(max(0.0, min(double(x), 800.0)), y);
+               curvePoints.push_back(new_point); //add point to vector or list
+            }
+            PuntoI = (Par.at<float>(0,0) * image_crop.rows + Par.at<float>(0,1));
+            //cout << "PuntoI =" << PuntoI << endl;
+            AnguloI = atan(-1.0/Par.at<float>(0,0))*180.0/CV_PI;
+            //cout << "AnguloI = " << AnguloI << endl;
+            for (int i = 0; i < curvePoints.size() - 1; i++){
+               line(image_crop, curvePoints[i], curvePoints[i + 1], Scalar(0,255,0), 2, CV_AA);
+            }
+            //cout << "ENCONTRE linea IZQ" << endl;
+            tracking_left = true;
+            dilate(image_lineLeft, mask_leftG, element);
+         }
+         else{
+            //cout << "Perdí la linea IZQ" << endl;
+            tracking_left = false;
+         }
+      }
+      else{
+         //cout << "Perdí la linea IZQ" << endl;
+         tracking_left = false;
       }
 
-      if (x_ == 0)
-      {
-        continue;
+      // imshow("Camerssa", image_lineLeft);
+      //       waitKey(1);
+
+
+      // imshow("Cdijeidee", image_crop);
+      // waitKey(1);
+
+      
+      
+
+
+
+      // Busquemos el carril DERECHO
+      nLabels = connectedComponentsWithStats(image_lineRight, labels, stats, centroids, 8, CV_32S);
+      //cout << endl << "Number of connected components = " << nLabels << endl << "All stats = " << stats << endl;
+      // Find the biggest area
+      the_max=0, index_max=-1;
+      if (nLabels > 1){
+         for (int i=1; i<nLabels; i++){
+            if (stats.at<int>(i,CC_STAT_AREA) > the_max){
+               the_max = stats.at<int>(i,CC_STAT_AREA);
+               index_max = i;
+            }
+         }
+         //cout << " Bigest (area, index) = (" << the_max << ", " << index_max << ")" << endl;
+
+         Mat image_label;
+         compare(labels, index_max, image_label, CMP_EQ);
+         // Better way to get the skeleton of an binary image
+         Mat skel(image_crop.rows, image_crop.cols, CV_8UC1, Scalar(0));
+         int inicio, num_pixels = 0;
+         for (int row = 0; row < skel.rows; row++){
+            bool flag = false;
+            for (int col = 0; col < skel.cols; col++){
+               if (flag == false && image_label.at<unsigned char>(row,col,0) > 0){
+                  inicio = col;
+                  flag = true;
+               }
+               if (flag == true && image_label.at<unsigned char>(row,col,0) == 0){
+                  skel.at<unsigned char>(row, (inicio + col) / 2 ) = 255;
+                  flag = false;
+                  num_pixels++;
+               }
+            }
+         }
+         //cout << num_pixels << endl;
+         if (num_pixels > 5){
+            Mat FI(num_pixels, 2, CV_32F, Scalar(0));
+            Mat  X(num_pixels, 1, CV_32F, Scalar(0));
+            int index = 0;
+            for(float y = 0; y < skel.rows; y++){
+               for(float x = 0; x < skel.cols; x++){
+                  if (skel.at<unsigned char>(y,x) == 255){
+                     FI.at<float>(index,0) = y;
+                     FI.at<float>(index,1) = 1.0;
+                      X.at<float>(index,0) = x;
+                     index++;               
+                  }
+               }
+            }
+            Mat FIT = FI.t();
+            Mat Par = (FIT * FI).inv() * FIT *X;
+            //cout << " Param = " << Par.at<float>(0,1) << endl;
+            vector<Point2f> curvePoints;
+            float x;
+            Point2f new_point;
+            for (float y = 0; y < heigth; y++){
+               x = Par.at<float>(0,0) * y + 
+                   Par.at<float>(0,1);
+               new_point = Point2f(max(0.0, min(double(x), 800.0)), y);
+               curvePoints.push_back(new_point); //add point to vector or list
+            }
+            PuntoD = (Par.at<float>(0,0) * image_crop.rows + Par.at<float>(0,1));
+            //cout << "PuntoD =" << PuntoD << endl;
+            AnguloD = atan(-1.0/Par.at<float>(0,0))*180.0/CV_PI;
+            //cout << "AnguloD = " << AnguloD << endl;
+            for (int i = 0; i < curvePoints.size() - 1; i++){
+               line(image_crop, curvePoints[i], curvePoints[i + 1], Scalar(255,0,255), 2, CV_AA);
+            }
+            //cout << "ENCONTRE linea DER" << endl;
+            tracking_right = true;
+            dilate(image_lineRight, mask_rightG, element);
+         }
+         else{
+            //cout << "Perdí la linea DER" << endl;
+            tracking_right = false;
+         }
+      }
+      else{
+         //cout << "Perdí la linea DER" << endl;
+         tracking_right = false;
       }
 
-      float degrees = atan2(y_, x_) * (180 / PI);
+      imshow("ambos carriles", image_crop);
+      waitKey(1);
 
-      if (fabs(degrees) < 10 || fabs(degrees) > 90)
-      {
-        continue;
+      ////////////////////////////////////////////////////////////
+
+      bitwise_and(mask_leftG, mask_rightG, and_masks);
+      
+      
+      minMaxLoc(and_masks, &min_and_masks, &max_and_masks );
+
+      if(max_and_masks >= 255.0){
+        
+        encimadas = true;
       }
 
-      if (degrees < 0)
-      {
-        //Lineas izq
-        degrees = degrees * -1;
-        degrees = -degrees + 180;
-        left_angles = left_angles + degrees;
-        left_lines_count++;
-        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-                 cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
+      ////////////////////////////////////////////////////////////
+
+
+      if (tracking_left && tracking_right){
+        cout << "Left: " << AnguloI << " Right: " << AnguloD << endl;
+        if(encimadas){
+          cout << "Encimadas: " << steering_angle << endl;
+          float promedio_angulo = (AnguloD + AnguloI)/2;
+          if(promedio_angulo > 0){
+            //Go right
+            steering_angle = -14;
+            speed = min(speed + 0.01, 0.1);
+
+          }
+          else{
+            //Go left
+            steering_angle = +14;
+            speed = min(speed + 0.01, 0.1);
+          }
+        }
+        else{
+          //No están encimadas
+          steering_angle = -((PuntoD+PuntoI)/2.0 - midWidth) * k1;
+          //steering_angle = -(AnguloI+AnguloD)/2.0;
+          steering_angle = max(-14.0, min(steering_angle, 14.0));
+          cout << steering_angle << endl;
+          speed = min(speed + 0.01, 0.2);
+        }
+
+
+        //  float angle_diff = AnguloD - AnguloI;
+        //  if(fabs(angle_diff) < 8){
+           
+        //    if(angle_diff > 0){
+        //      steering_angle = -14.0;
+        //    }
+        //    else{
+        //      steering_angle = +14.0;
+        //    }
+        
+          
+        // }
+           
+
+           
+         
+        //  else{
+        //   steering_angle = -((PuntoD+PuntoI)/2.0 - midWidth) * k1;
+        //   //steering_angle = -(AnguloI+AnguloD)/2.0;
+        //   steering_angle = max(-14.0, min(steering_angle, 14.0));
+        //   cout << steering_angle << endl;
+        //   speed = min(speed + 0.01, 0.3);
+        //  }
       }
-      else if (degrees > 0)
-      {
-        //lineas derechas
-        right_angles = right_angles + degrees;
-        right_lines_count++;
-        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-                 cv::Scalar(0, 0, 200), 2, cv::LINE_AA);
+      if (tracking_left && !tracking_right){
+         cout << "TurnRight" << endl;
+         speed = max(speed - 0.1, 0.1);
+         steering_angle = max(steering_angle - k2, -14.0); 
+         //steering_angle = -AnguloI;
+       }
+      if (!tracking_left && tracking_right){
+         cout << "TurnLeft" << endl;
+         speed = max(speed - 0.1, 0.1);
+         steering_angle = min(steering_angle + k2, 14.0);
+         //steering_angle = -AnguloD;
       }
-    }
-
-    if (right_lines_count != 0)
-    {
-      right_angle_average = right_angles / right_lines_count;
-    }
-    else
-    {
-      right_angle_average = 0;
-    }
-
-    if (left_lines_count != 0)
-    {
-      left_angle_average = left_angles / left_lines_count;
-    }
-    else
-    {
-      left_angle_average = 0;
-    }
-
-    float angle_average = 0;
-
-    if (left_angle_average > 0 && right_angle_average > 0)
-    {
-      angle_average = (right_angle_average + left_angle_average) / 2;
-    }
-    else if (left_angle_average > 0)
-    {
-      angle_average = left_angle_average;
-    }
-    else
-    {
-      angle_average = right_angle_average;
-    }
-    ROS_INFO("left: %f, right: %f, av: %f", left_angle_average, right_angle_average, angle_average);
-
-    // ROS_INFO("AVE %f", angle_average);
-
-    cv::Point first_point = cv::Point(IMAGE_WIDTH / 2, IMAGE_HEIGHT);
-    float last_x = IMAGE_WIDTH / 2 - (IMAGE_HEIGHT / tanf(angle_average * halfC));
-    cv::Point last_point = cv::Point(last_x, 0);
-
-    cv::line(img_copy, first_point, last_point,
-             cv::Scalar(255, 0, 0), 2, cv::LINE_AA);
-
-    angle_error_degrees = angle_diff;
-
-    //Show windows
-    cv::imshow(OPENCV_WINDOW, img_copy);
-    cv::imshow("jjj", img_dummy);
-    cv::imshow(OPENCV_WINDOW_EDGES, edge);
-    // cv::imshow(OPENCV_WINDOW_SKE, skel);
-    cv::waitKey(3);
-  }
-
-  cv::Mat findLanes(cv::Mat img_copy)
-  {
-
-    float right_angles = 0;
-    float left_angles = 0;
-    float left_lines_count = 0;
-    float right_lines_count = 0;
-    float angle_diff = 0;
-
-    for (int i = 0; i < lines_.size(); i++)
-    {
-      cv::Vec4i l = lines_[i];
-
-      float x_ = l[2] - l[0];
-      float y_ = l[3] - l[1];
-      float m = 0;
-
-      if (x_ != 0)
-      {
-        m = -y_ / x_;
+      if (!tracking_left && !tracking_right){
+         cout << "IamLost" << endl;
+         speed = 0.0;
+        //  steering_angle = 0.0;
       }
 
-      float b = l[3] - (m * l[2]);
+      // cout << "Speed = " << speed << ", Steering_angle[deg] = " << steering_angle << endl << endl;
+      driveStruct message;
 
-      if (l[3] < ROI_Y || l[1] < ROI_Y)
-      {
-        continue;
-      }
+      message.speed = speed;
+      message.steering_angle = steering_angle;
 
-      if (x_ == 0)
-      {
-        continue;
-      }
+      return message;
+      // ackermann_msgs::AckermannDriveStamped driveStamped;
+      // driveStamped.drive.speed = speed;
+      // driveStamped.drive.steering_angle = steering_angle*(CV_PI/180.0);
+      // cmd_pub.publish(driveStamped);
 
-      float degrees = atan2(y_, x_) * (180 / PI);
 
-      if (fabs(degrees) < 10 || fabs(degrees) > 90)
-      {
-        continue;
-      }
-
-      if (degrees < 0)
-      {
-        //Lineas izq
-        degrees = degrees * -1;
-        degrees = -degrees + 180;
-        left_angles = left_angles + degrees;
-        left_lines_count++;
-        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-                 cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
-      }
-      else if (degrees > 0)
-      {
-        //lineas derechas
-        right_angles = right_angles + degrees;
-        right_lines_count++;
-        cv::line(img_copy, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-                 cv::Scalar(0, 0, 200), 2, cv::LINE_AA);
-      }
-    }
-  }
-
-  /**
-     Callback function analyzing the incoming images
-  */
-  void imageCallback(const sensor_msgs::ImageConstPtr &msg)
-  {
-    cv_bridge::CvImagePtr cv_ptr;
-    try
-    {
-      cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-    }
-    catch (cv_bridge::Exception &e)
-    {
-      ROS_ERROR("cv_bridge exception: %s", e.what());
-      return;
-    }
-
-    // Find white part of image. Determine centroid and draw circle at centroid
-    // Make sure to ignore the marks in the middle of the road. Since the white contains also
-    // the orange of the mid stripes, convert to color space
-    // convert image to grayscale
-    cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
-
-    cv::inRange(hsv, cv::Scalar(0, 0, 0), cv::Scalar(180, 255, 66), thr);
-
-    // find moments of the image
-    cv::Moments m = cv::moments(thr, true);
-    middle_of_road_.x = m.m10 / m.m00;
-    middle_of_road_.y = m.m01 / m.m00;
-
-    cv::Canny(thr, edge, 50, 200, 3);                          // detect edges
-    cv::HoughLinesP(edge, lines_, 1, CV_PI / 180, 20, 50, 10); // detect lines
-
-    cv::imshow(OPENCV_WINDOW_THR, thr);
-    cv::imshow(OPENCV_WINDOW_EDGES, edge);
-
-    cv::Mat skel(thr.size(), CV_8UC1, cv::Scalar(0));
-    cv::Mat temp(thr.size(), CV_8UC1);
-
-    cv::Mat element = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3, 3));
-
-    bool done;
-    do
-    {
-      cv::morphologyEx(thr, temp, cv::MORPH_OPEN, element);
-      cv::bitwise_not(temp, temp);
-      cv::bitwise_and(thr, temp, temp);
-      cv::bitwise_or(skel, temp, skel);
-      cv::erode(thr, thr, element);
-
-      double max;
-      cv::minMaxLoc(thr, 0, &max);
-      done = (max == 0);
-    } while (!done);
-
-    cv::imshow(OPENCV_WINDOW_SKE, skel);
-
-    cv::Canny(skel, edge, 50, 200, 3);                         // detect edges
-    cv::HoughLinesP(edge, lines_, 1, CV_PI / 180, 10, 50, 10); // detect lines
-
-    cv::imshow(OPENCV_WINDOW_THR, thr);
-    cv::imshow(OPENCV_WINDOW_EDGES, edge);
-
-    // cv::imshow('edges', edge);
-
-    // Find free road ahead
-    int free_road = freeRoadAhead();
-
-    // show the image with a point mark at the centroid, and detected lines
-
-    if (cv_ptr->image.rows > 60 && cv_ptr->image.cols > 60)
-      cv::circle(cv_ptr->image, middle_of_road_, 10, CV_RGB(255, 0, 0));
-
-    // Draw the lines
-    int midcol = imageWidth() / 2;
-    cv::line(cv_ptr->image, cv::Point(midcol, imageHeight()),
-             cv::Point(midcol, imageHeight() - free_road),
-             cv::Scalar(0, 200, 0), 2, cv::LINE_AA);
-
-    float right_angles = 0;
-    float left_angles = 0;
-    float left_lines_count = 0;
-    float right_lines_count = 0;
-    float angle_diff = 0;
-
-    for (int i = 0; i < lines_.size(); i++)
-    {
-      cv::Vec4i l = lines_[i];
-
-      float x_ = l[2] - l[0];
-      float y_ = l[3] - l[1];
-      float m = 0;
-
-      if (x_ != 0)
-      {
-        m = -y_ / x_;
-      }
-
-      float b = l[3] - (m * l[2]);
-
-      if (l[3] < ROI_Y || l[1] < ROI_Y)
-      {
-        continue;
-      }
-
-      if (m > 0)
-      {
-        // ROS_INFO("B_IZQ: %f", b);
-      }
-      else
-      {
-        // ROS_INFO("B_DER: %f", b);
-      }
-
-      if (x_ == 0)
-      {
-        continue;
-      }
-
-      float degrees = atan2(y_, x_) * (180 / PI);
-
-      if (fabs(degrees) < 10 || fabs(degrees) > 90)
-      {
-        continue;
-      }
-
-      if (degrees < 0)
-      {
-        //Lineas izq
-        degrees = degrees * -1;
-        degrees = -degrees + 180;
-        left_angles = left_angles + degrees;
-        left_lines_count++;
-        cv::line(cv_ptr->image, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-                 cv::Scalar(120, 0, 200), 2, cv::LINE_AA);
-      }
-      else if (degrees > 0)
-      {
-        //lineas derechas
-        right_angles = right_angles + degrees;
-        right_lines_count++;
-        cv::line(cv_ptr->image, cv::Point(l[0], l[1]), cv::Point(l[2], l[3]),
-                 cv::Scalar(0, 0, 200), 2, cv::LINE_AA);
-      }
-
-      // ROS_INFO("Angulo der: %f Ángulo izq: %f", right_angle_average, left_angle_average);
-    }
-
-    if (right_lines_count != 0)
-    {
-      right_angle_average = right_angles / right_lines_count;
-    }
-    else
-    {
-      right_angle_average = 0;
-    }
-
-    if (left_lines_count != 0)
-    {
-      left_angle_average = left_angles / left_lines_count;
-    }
-    else
-    {
-      left_angle_average = 0;
-    }
-
-    angle_diff = right_angle_average - (left_angle_average * (-1));
-    ROS_INFO("left: %f, right: %f", left_angle_average, right_angle_average);
-    float angle_average = (right_angle_average + left_angle_average) / 2;
-
-    // ROS_INFO("AVE %f", angle_average);
-
-    cv::Point first_point = cv::Point(IMAGE_WIDTH / 2, IMAGE_HEIGHT);
-    float last_x = IMAGE_WIDTH / 2 - (IMAGE_HEIGHT / tanf(angle_average * halfC));
-    cv::Point last_point = cv::Point(last_x, 0);
-
-    cv::line(cv_ptr->image, first_point, last_point,
-             cv::Scalar(255, 0, 0), 2, cv::LINE_AA);
-
-    // ROS_INFO("ANGLE_DIFF: %f", angle_diff);linear extrapolation
-    angle_error_degrees = angle_diff;
-    // float angle_diff_rad = (angle_diff * PI/180);
-
-    // ROS_INFO("IZQ: %f, DER: %f", left_angle_average, right_angle_average);
-
-    // float y_final = IMAGE_HEIGHT - LINE_HEIGHT*sin(angle_diff_rad);
-    // float x_final = IMAGE_WIDTH - LINE_HEIGHT*cos(angle_diff_rad);
-    // cv::line( cv_ptr->image, cv::Point(IMAGE_WIDTH/2, IMAGE_HEIGHT), cv::Point(x_final, y_final),
-    // cv::Scalar(0,255,0), 2, cv::LINE_AA);
-
-    // Update GUI Window
-    //cv::imshow(OPENCV_WINDOW, cv_ptr->image);
-    cv::imshow(OPENCV_WINDOW, cv_ptr->image);
-    cv::waitKey(3);
-
-    // Output modified video stream
-    // image_pub_.publish(cv_ptr->toImageMsg());
   }
 };
 

@@ -1,0 +1,28 @@
+{
+    "configurations": [
+        {
+            "browse": {
+                "databaseFilename": "",
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "includePath": [
+                "/home/charlie632/catkin_ws/devel/include",
+                "/opt/ros/kinetic/include",
+                "/home/charlie632/catkin_ws/src/image-transport/image_common/camera_calibration_parsers/include",
+                "/home/charlie632/catkin_ws/src/image-transport/image_common/camera_info_manager/include",
+                "/home/charlie632/catkin_ws/src/control_coche/include",
+                "/home/charlie632/catkin_ws/src/example_opencv/include",
+                "/home/charlie632/catkin_ws/src/image_converter/include",
+                "/home/charlie632/catkin_ws/src/image-transport/image_common/image_transport/include",
+                "/home/charlie632/catkin_ws/src/image-transport/src/imgae_transport_tu/include",
+                "/home/charlie632/catkin_ws/src/image-transport/image_common/polled_camera/include",
+                "/home/charlie632/catkin_ws/src/rosserial/rosserial_server/include",
+                "/home/charlie632/catkin_ws/src/rosserial/rosserial_test/include",
+                "/usr/include"
+            ],
+            "name": "Linux",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}
